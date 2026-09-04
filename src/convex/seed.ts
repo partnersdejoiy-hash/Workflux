@@ -1,4 +1,114 @@
 import { mutation } from "./_generated/server";
+import { generateEmployeeId } from "./helpers";
+
+// ─── Seed specific test users ────────────────────────────────────
+
+export const seedTestUsers = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const now = Date.now();
+
+    // Find default department and shift
+    const defaultDept = await ctx.db.query("departments").first();
+    const defaultShift = await ctx.db.query("shifts").first();
+    if (!defaultDept || !defaultShift) {
+      return { error: "Run seedAll first to create departments and shifts" };
+    }
+
+    const existingUsers = await ctx.db.query("users").collect();
+    const existingEmails = new Set(existingUsers.map((u) => u.email).filter(Boolean));
+
+    const results: string[] = [];
+
+    // ─── Admin: Deepak Sharma ─────────────────────────────────
+    if (!existingEmails.has("deepak.sharma@dejoiy.com")) {
+      const adminUserId = await ctx.db.insert("users", {
+        name: "Deepak Sharma",
+        email: "deepak.sharma@dejoiy.com",
+        role: "super_admin",
+      });
+
+      const empCount = await ctx.db.query("employees").collect();
+      const empIdStr = generateEmployeeId(empCount.length + 1);
+
+      const empId = await ctx.db.insert("employees", {
+        userId: adminUserId,
+        employeeId: empIdStr,
+        firstName: "Deepak",
+        lastName: "Sharma",
+        email: "deepak.sharma@dejoiy.com",
+        departmentId: defaultDept._id,
+        joiningDate: now - 180 * 86400000,
+        employmentStatus: "active",
+        payType: "salary",
+        monthlySalary: 120000,
+        overtimeMultiplier: 1.5,
+        holidayMultiplier: 2.0,
+        timezone: "Asia/Kolkata",
+        createdAt: now - 180 * 86400000,
+        updatedAt: now,
+      });
+
+      await ctx.db.insert("shiftAssignments", {
+        employeeId: empId,
+        shiftId: defaultShift._id,
+        startDate: now - 180 * 86400000,
+        isActive: true,
+        createdAt: now,
+      });
+
+      results.push(`Admin created: deepak.sharma@dejoiy.com (${empIdStr})`);
+    } else {
+      results.push("Admin already exists: deepak.sharma@dejoiy.com");
+    }
+
+    // ─── Employee: Raghvi Sharma ──────────────────────────────
+    if (!existingEmails.has("raghvi.sharma@test.com")) {
+      const empUserId = await ctx.db.insert("users", {
+        name: "Raghvi Sharma",
+        email: "raghvi.sharma@test.com",
+        role: "employee",
+      });
+
+      const empCount = await ctx.db.query("employees").collect();
+      const empIdStr = generateEmployeeId(empCount.length + 1);
+
+      const empId = await ctx.db.insert("employees", {
+        userId: empUserId,
+        employeeId: empIdStr,
+        firstName: "Raghvi",
+        lastName: "Sharma",
+        email: "raghvi.sharma@test.com",
+        departmentId: defaultDept._id,
+        teamId: (await ctx.db.query("teams").first())?._id,
+        designationId: (await ctx.db.query("designations").first())?._id,
+        joiningDate: now - 90 * 86400000,
+        employmentStatus: "active",
+        payType: "salary",
+        monthlySalary: 55000,
+        overtimeMultiplier: 1.5,
+        holidayMultiplier: 2.0,
+        timezone: "Asia/Kolkata",
+        createdAt: now - 90 * 86400000,
+        updatedAt: now,
+      });
+
+      await ctx.db.insert("shiftAssignments", {
+        employeeId: empId,
+        shiftId: defaultShift._id,
+        startDate: now - 90 * 86400000,
+        isActive: true,
+        createdAt: now,
+      });
+
+      results.push(`Employee created: raghvi.sharma@test.com (${empIdStr})`);
+    } else {
+      results.push("Employee already exists: raghvi.sharma@test.com");
+    }
+
+    return { results };
+  },
+});
 
 export const seedAll = mutation({
   args: {},
