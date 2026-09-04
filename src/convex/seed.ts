@@ -1,5 +1,27 @@
 import { mutation } from "./_generated/server";
+import { v } from "convex/values";
 import { generateEmployeeId } from "./helpers";
+
+// ─── Set role for a user by email ───────────────────────────────
+// Use this from Convex dashboard to set admin/employee roles
+
+export const setRoleByEmail = mutation({
+  args: {
+    email: v.string(),
+    role: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("email", (q) => q.eq("email", args.email))
+      .first();
+
+    if (!user) return { error: `No user found with email: ${args.email}` };
+
+    await ctx.db.patch(user._id, { role: args.role as any });
+    return { success: true, userId: user._id, role: args.role };
+  },
+});
 
 // ─── Seed specific test users ────────────────────────────────────
 
