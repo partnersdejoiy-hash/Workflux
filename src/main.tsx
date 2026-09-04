@@ -1,21 +1,37 @@
 import '@vly-ai/integrations';
 import { Toaster } from "@/components/ui/sonner";
 import { RequireAuth } from "@/components/RequireAuth";
+import { useAuth } from "@/hooks/use-auth";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import { ConvexAuthProvider } from "@convex-dev/auth/react";
 import { ConvexReactClient } from "convex/react";
 import React, { StrictMode, useEffect, lazy, Suspense } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Route, Routes, useLocation } from "react-router";
+import { BrowserRouter, Route, Routes, useLocation, Navigate } from "react-router";
 import "./index.css";
 
-// Lazy load route components for better code splitting
+// Lazy load route components
 const Landing = lazy(() => import("./pages/Landing.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
-const Dashboard = lazy(() => import("./pages/Dashboard.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
-// Simple loading fallback for route transitions
+// App pages (lazy loaded)
+const AppShell = lazy(() => import("./components/AppShell.tsx"));
+const EmployeeDashboard = lazy(() => import("./pages/EmployeeDashboard.tsx"));
+const AdminDashboard = lazy(() => import("./pages/AdminDashboard.tsx"));
+const LiveAttendance = lazy(() => import("./pages/LiveAttendance.tsx"));
+const Employees = lazy(() => import("./pages/Employees.tsx"));
+const Departments = lazy(() => import("./pages/Departments.tsx"));
+const Teams = lazy(() => import("./pages/Teams.tsx"));
+const Shifts = lazy(() => import("./pages/Shifts.tsx"));
+const Timesheets = lazy(() => import("./pages/Timesheets.tsx"));
+const Corrections = lazy(() => import("./pages/Corrections.tsx"));
+const PayrollPage = lazy(() => import("./pages/PayrollPage.tsx"));
+const Reports = lazy(() => import("./pages/Reports.tsx"));
+const AuditLogs = lazy(() => import("./pages/AuditLogs.tsx"));
+const Profile = lazy(() => import("./pages/Profile.tsx"));
+const Settings = lazy(() => import("./pages/Settings.tsx"));
+
 function RouteLoading() {
   return (
     <div className="min-h-screen flex items-center justify-center">
@@ -24,8 +40,6 @@ function RouteLoading() {
   );
 }
 
-/** Silent error boundary — if VlyToolbar crashes it renders nothing instead of
- *  crashing the whole app (e.g. hook errors in WebContainer environment). */
 class ToolbarErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { hasError: boolean }
@@ -42,7 +56,6 @@ class ToolbarErrorBoundary extends React.Component<
   }
 }
 
-/** Hard guard so runtime errors never leave the preview as a blank page. */
 class RootErrorBoundary extends React.Component<
   { children: React.ReactNode },
   { hasError: boolean; message: string; stack: string }
@@ -82,8 +95,6 @@ class RootErrorBoundary extends React.Component<
 
 const convex = new ConvexReactClient(import.meta.env.VITE_CONVEX_URL as string);
 
-
-
 function RouteSyncer() {
   const location = useLocation();
   useEffect(() => {
@@ -107,6 +118,36 @@ function RouteSyncer() {
   return null;
 }
 
+/** Dashboard route that selects the right view based on user role */
+function DashboardRouter() {
+  const { user } = useAuth();
+  const isEmployee = !user?.role || user.role === "employee";
+
+  return (
+    <AppShell>
+      <Routes>
+        <Route index element={isEmployee ? <EmployeeDashboard /> : <AdminDashboard />} />
+        <Route path="my-shift" element={<EmployeeDashboard />} />
+        <Route path="attendance" element={<EmployeeDashboard />} />
+        <Route path="activities" element={<EmployeeDashboard />} />
+        <Route path="live" element={<LiveAttendance />} />
+        <Route path="employees" element={<Employees />} />
+        <Route path="departments" element={<Departments />} />
+        <Route path="teams" element={<Teams />} />
+        <Route path="shifts" element={<Shifts />} />
+        <Route path="timesheets" element={<Timesheets />} />
+        <Route path="corrections" element={<Corrections />} />
+        <Route path="payroll" element={<PayrollPage />} />
+        <Route path="reports" element={<Reports />} />
+        <Route path="audit" element={<AuditLogs />} />
+        <Route path="profile" element={<Profile />} />
+        <Route path="settings" element={<Settings />} />
+        <Route path="notifications" element={<AuditLogs />} />
+        <Route path="*" element={<Navigate to="/app" replace />} />
+      </Routes>
+    </AppShell>
+  );
+}
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -122,16 +163,17 @@ createRoot(document.getElementById("root")!).render(
               <Route path="/" element={<Landing />} />
               <Route
                 path="/auth"
-                element={<AuthPage redirectAfterAuth="/dashboard" />}
+                element={<AuthPage redirectAfterAuth="/app" />}
               />
               <Route
-                path="/dashboard"
+                path="/app/*"
                 element={
                   <RequireAuth>
-                    <Dashboard />
+                    <DashboardRouter />
                   </RequireAuth>
                 }
               />
+              <Route path="/dashboard" element={<Navigate to="/app" replace />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </Suspense>
