@@ -3,7 +3,7 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { cn, formatDuration, getStatusBg } from "@/lib/utils";
+import { cn, formatDuration, getStatusBg, msToHMS } from "@/lib/utils";
 import { useAuth } from "@/hooks/use-auth";
 import { toast } from "sonner";
 import {
@@ -23,7 +23,13 @@ import {
   Eye,
   User,
   Calendar,
+  MoreHorizontal,
+  Lock,
+  CheckIcon,
+  Coffee,
 } from "lucide-react";
+import { calculateAttendance } from "@/convex/helpers";
+import { useQuery as useConvexQuery } from "convex/react";
 
 // ─── Column definitions ──────────────────────────────────────────
 
@@ -35,8 +41,13 @@ interface ColumnDef {
   sticky?: "left";
   editable?: boolean;
   align?: "left" | "center" | "right";
+  status?: "normal" | "edited" | "pending" | "approved" | "exception" | "locked" | "missing" | "late" | "overtime";
+  statusIcon?: React.ReactNode;
+  statusColor?: string;
+  tooltip?: string;
 }
 
+// Enhanced column definitions with status tracking
 const DEFAULT_COLUMNS: ColumnDef[] = [
   { key: "expand", label: "", width: 32, sticky: "left" },
   { key: "date", label: "Date", width: 100, sortable: true, sticky: "left" },
@@ -44,12 +55,32 @@ const DEFAULT_COLUMNS: ColumnDef[] = [
   { key: "employeeIdCode", label: "ID", width: 90, sortable: true },
   { key: "departmentName", label: "Dept", width: 110, sortable: true },
   { key: "shiftName", label: "Shift", width: 100, sortable: true },
-  { key: "clockIn", label: "Clock In", width: 100, sortable: true, editable: true, align: "center" },
-  { key: "clockOut", label: "Clock Out", width: 100, sortable: true, editable: true, align: "center" },
-  { key: "breakMinutes", label: "Break", width: 75, sortable: true, align: "center" },
-  { key: "netMinutes", label: "Regular", width: 80, sortable: true, align: "center" },
-  { key: "overtimeMinutes", label: "OT", width: 65, sortable: true, align: "center" },
-  { key: "grossMinutes", label: "Total", width: 80, sortable: true, align: "center" },
+  // Clock In with status visualization
+  { 
+    key: "clockIn", 
+    label: "Clock In", 
+    width: 100, 
+    sortable: true, 
+    editable: true, 
+    align: "center",
+    status: "normal",
+    tooltip: "Click to edit clock-in time"
+  },
+  // Clock Out with status visualization
+  { 
+    key: "clockOut", 
+    label: "Clock Out", 
+    width: 100, 
+    sortable: true, 
+    editable: true, 
+    align: "center",
+    status: "normal",
+    tooltip: "Click to edit clock-out time"
+  },
+  { key: "breakMinutes", label: "Break", width: 75, sortable: true, align: "center", tooltip: "Break duration in minutes" },
+  { key: "netMinutes", label: "Regular", width: 80, sortable: true, align: "center", tooltip: "Net working hours" },
+  { key: "overtimeMinutes", label: "OT", width: 65, sortable: true, align: "center", tooltip: "Overtime hours", status: "overtime" },
+  { key: "grossMinutes", label: "Total", width: 80, sortable: true, align: "center", tooltip: "Total hours including overtime" },
   { key: "status", label: "Status", width: 110, sortable: true },
 ];
 
@@ -92,6 +123,7 @@ export default function TimesheetGrid({
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [editingCell, setEditingCell] = useState<{ rowId: string; field: string } | null>(null);
   const [editValue, setEditValue] = useState("");
+  const [editingCellReason, setEditingCellReason] = useState("");
   const [selectedRows, setSelectedRows] = useState<Set<string>>(new Set());
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; row: any } | null>(null);
   const [showColConfig, setShowColConfig] = useState(false);
@@ -115,6 +147,27 @@ export default function TimesheetGrid({
     sortOrder,
   });
 
+  // Query for time adjustments per session (for edit tracking)
+  const allAdjustments = useQuery(
+    api.adjustments.list,
+    { page: 0, pageSize: 1000 }
+  );
+  
+  // Build a map of sessionId -> has adjustment
+  const adjustmentMap = useMemo(() => {
+    const map: Record<string, { originalValue: string; newValue: string; reason: string }> = {};
+    if (allAdjustments?.data) {
+      allAdjustments.data.forEach((adj: any) => {
+        map[adj.attendanceSessionId] = {
+          originalValue: adj.originalValue || "",
+          newValue: adj.newValue || "",
+          reason: adj.reason || "",
+        };
+      });
+    }
+    return map;
+  }, [allAdjustments?.data]);
+
   const quickApply = useMutation(api.adjustments.quickApply);
 
   const totalPages = timesheet ? Math.ceil(timesheet.total / timesheet.pageSize) : 0;
@@ -134,6 +187,7 @@ export default function TimesheetGrid({
   // ─── Editing ─────────────────────────────────────────────────
 
   const startEdit = useCallback((rowId: string, field: string, val: string) => {
+    // Check permissions - only allow specific edit types based on role
     if (!isAdmin) return;
     setEditingCell({ rowId, field });
     setEditValue(val);
@@ -148,23 +202,35 @@ export default function TimesheetGrid({
         const dateStr = row.date.toString().replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3");
         value = `${dateStr}T${editValue}:00`;
       }
+      
+      // Get original value from the row for audit trail
+      const originalValue = editingCell.field === "clockIn" 
+        ? (row.clockIn ? new Date(row.clockIn).toISOString() : "")
+        : (row.clockOut ? new Date(row.clockOut).toISOString() : "");
+      
       await quickApply({
         attendanceSessionId: row._id,
         field: editingCell.field,
         value,
-        reason: `Timesheet edit: ${editingCell.field} updated`,
+        reason: editingCellReason || `Timesheet edit: ${editingCell.field} updated`,
       });
       toast.success("Adjustment saved");
+      
+      // Mark row as adjusted with metadata
+      setExpandedRows((p) => { const n = new Set(p); n.has(row._id) ? n.delete(row._id) : n.add(row._id); return n; });
+      
       setEditingCell(null);
       setEditValue("");
+      setEditingCellReason("");
     } catch (error: any) {
       toast.error(error.message || "Failed to save");
     }
-  }, [editingCell, editValue, quickApply]);
+  }, [editingCell, editValue, quickApply, editingCellReason]);
 
   const cancelEdit = useCallback(() => {
     setEditingCell(null);
     setEditValue("");
+    setEditingCellReason("");
   }, []);
 
   // ─── Context menu ────────────────────────────────────────────
@@ -229,6 +295,52 @@ export default function TimesheetGrid({
 
   const renderCell = useCallback((col: ColumnDef, row: any): React.ReactNode => {
     const val = row[col.key];
+    const rowStatus = row.status;
+    // Check if this session has an adjustment from the adjustment map
+    const sessionAdjustment = adjustmentMap[row._id];
+    const hasAdjustment = !!sessionAdjustment;
+    const adjustmentReason = sessionAdjustment?.reason || row._adjustmentReason;
+
+    // Determine cell status visuals
+    let statusClass = "";
+    let statusTooltip = "";
+    let statusIcon = null;
+    let cellBg = "";
+    let cellFg = "";
+
+    // Status-based styling
+    if (rowStatus) {
+      const statusMap: Record<string, { bg: string; fg: string; icon: React.ReactNode; tooltip: string }> = {
+        working: { bg: "bg-terminal-green/10", fg: "text-terminal-green", icon: <span aria-hidden="true" />, tooltip: "Working" },
+        late: { bg: "bg-terminal-red/10", fg: "text-terminal-red", icon: <span aria-hidden="true" />, tooltip: "Late arrival" },
+        overtime: { bg: "bg-terminal-amber/10", fg: "text-terminal-amber", icon: <span aria-hidden="true" />, tooltip: "Overtime hours" },
+        on_break: { bg: "bg-terminal-amber/10", fg: "text-terminal-amber", icon: <span aria-hidden="true" />, tooltip: "On break" },
+        shift_completed: { bg: "bg-terminal-blue/10", fg: "text-terminal-blue", icon: <span aria-hidden="true" />, tooltip: "Shift completed" },
+        early_leave: { bg: "bg-terminal-amber/10", fg: "text-terminal-amber", icon: <span aria-hidden="true" />, tooltip: "Early departure" },
+        absent: { bg: "bg-terminal-red/10", fg: "text-terminal-red", icon: <span aria-hidden="true" />, tooltip: "Absent" },
+        not_started: { bg: "bg-muted", fg: "text-muted-foreground", icon: <span aria-hidden="true" />, tooltip: "Not started" },
+        approved: { bg: "bg-terminal-green/10", fg: "text-terminal-green", icon: <CheckIcon className="w-3 h-3" />, tooltip: "Approved" },
+        pending: { bg: "bg-terminal-amber/10", fg: "text-terminal-amber", icon: <span aria-hidden="true" />, tooltip: "Pending approval" },
+        exception: { bg: "bg-terminal-red/10", fg: "text-terminal-red", icon: <AlertTriangle className="w-3 h-3" />, tooltip: "Exception recorded" },
+        locked: { bg: "bg-terminal-blue/10", fg: "text-terminal-blue", icon: <Lock className="w-3 h-3" />, tooltip: "Locked for payroll" },
+        missing: { bg: "bg-terminal-red/10", fg: "text-terminal-red", icon: <Clock className="w-3 h-3" />, tooltip: "Missing punch" },
+      };
+      
+      const statusInfo = statusMap[rowStatus] || statusMap["normal"];
+      statusClass = statusInfo.bg ? ` ${statusInfo.bg} ${statusInfo.fg}` : "";
+      statusTooltip = statusInfo.tooltip || "";
+      statusIcon = statusInfo.icon;
+    }
+
+    // Edited indicator
+    let editedBadge = "";
+    if (hasAdjustment) {
+      editedBadge = (
+        <Badge variant="outline" className="text-[7px] ml-1" style={{ background: "bg-terminal-green/10", color: "text-terminal-green" }}>
+          Adj
+        </Badge>
+      );
+    }
 
     if (col.key === "expand") {
       return (
@@ -257,6 +369,16 @@ export default function TimesheetGrid({
     if (col.key === "clockIn" || col.key === "clockOut") {
       const timeStr = val ? new Date(val).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: true }) : "—";
       const isEditing = editingCell?.rowId === row._id && editingCell?.field === col.key;
+      const cellStatus = rowStatus || "normal";
+
+      // Build status classes for the display span
+      const statusStyles: string[] = [];
+      if (cellStatus === "late") statusStyles.push("text-terminal-red");
+      if (cellStatus === "overtime") statusStyles.push("text-terminal-amber font-medium");
+      if (cellStatus === "early_leave") statusStyles.push("text-terminal-amber");
+      if (cellStatus === "exception") statusStyles.push("text-terminal-red");
+      if (cellStatus === "locked") statusStyles.push("text-terminal-blue");
+      if (cellStatus === "missing") statusStyles.push("text-terminal-red");
 
       if (isEditing) {
         return (
@@ -270,33 +392,61 @@ export default function TimesheetGrid({
               if (e.key === "Enter") saveEdit(row);
               if (e.key === "Escape") cancelEdit();
             }}
-            className="w-full h-5 text-[10px] border border-terminal-green rounded px-1 bg-background text-center font-mono"
+            className={cn(
+              "w-full h-5 text-[10px] border border-terminal-green rounded px-1 bg-background text-center font-mono",
+              statusStyles.length > 0 ? statusStyles.join(" ") : ""
+            )}
           />
         );
+      }
+
+      // Build status-enhanced display span
+      const spanClasses: string[] = ["timer-display"];
+      if (col.editable && isAdmin && "cursor-pointer hover:bg-muted rounded px-0.5") spanClasses.push("cursor-pointer hover:bg-muted rounded px-0.5");
+      
+      // Add late/overtime styling
+      statusStyles.forEach(s => spanClasses.push(s));
+      
+      // Add edited badge if adjusted
+      if (hasAdjustment) {
+        spanClasses.push("relative");
       }
 
       return (
         <span
           className={cn(
-            "timer-display",
-            col.editable && isAdmin && "cursor-pointer hover:bg-muted rounded px-0.5",
+            ...spanClasses,
             row.isLate && col.key === "clockIn" && "text-terminal-red",
           )}
           onDoubleClick={() => col.editable && isAdmin && startEdit(row._id, col.key, val ? new Date(val).toISOString().slice(11, 16) : "")}
+          title={statusTooltip || undefined}
         >
           {timeStr}
+          {hasAdjustment && (
+            <span className="absolute -top-1 -right-1 bg-terminal-green/10 text-terminal-green text-[7px] rounded px-1">
+              Adj
+            </span>
+          )}
+          <span className="relative inset-0 block h-full w-full">
+            {timeStr}
+          </span>
+          {editedBadge}
         </span>
       );
     }
 
     if (["breakMinutes", "netMinutes", "overtimeMinutes", "grossMinutes"].includes(col.key)) {
       const m = val ?? 0;
+      const spanClasses: string[] = ["timer-display"];
+      
+      if (col.key === "overtimeMinutes" && m > 0) spanClasses.push("text-terminal-amber font-medium");
+      if (col.key === "netMinutes") spanClasses.push("font-medium");
+      
+      if (rowStatus === "overtime") spanClasses.push("text-terminal-amber");
+      if (rowStatus === "late") spanClasses.push("text-terminal-red");
+      
       return (
-        <span className={cn(
-          "timer-display",
-          col.key === "overtimeMinutes" && m > 0 && "text-terminal-amber font-medium",
-          col.key === "netMinutes" && "font-medium",
-        )}>
+        <span className={cn(...spanClasses)}>
           {formatDuration(m)}
         </span>
       );
@@ -421,6 +571,9 @@ export default function TimesheetGrid({
             {timesheet.data?.map((row: any) => {
               const isExpanded = expandedRows.has(row._id);
               const isSelected = selectedRows.has(row._id);
+              const rowStatus = row.status;
+              const cellHasAdjustment = row._adjusted ?? false;
+              
               return (
                 <RowFragment key={row._id}>
                   <tr
@@ -428,6 +581,12 @@ export default function TimesheetGrid({
                       "border-b border-border/50 transition-colors hover:bg-muted/30",
                       isSelected && "bg-terminal-green/5",
                       row.isLate && "bg-terminal-red/5",
+                      cellHasAdjustment && "bg-terminal-green/5",
+                      rowStatus === "overtime" && "bg-terminal-amber/5",
+                      rowStatus === "late" && "bg-terminal-red/5",
+                      rowStatus === "early_leave" && "bg-terminal-amber/5",
+                      rowStatus === "exception" && "bg-terminal-red/5",
+                      rowStatus === "locked" && "bg-terminal-blue/5",
                     )}
                     style={{ height: rh }}
                     onContextMenu={(e) => handleCtx(e, row)}
@@ -499,17 +658,63 @@ export default function TimesheetGrid({
           style={{ left: Math.min(contextMenu.x, window.innerWidth - 200), top: Math.min(contextMenu.y, window.innerHeight - 250) }}
           onClick={(e) => e.stopPropagation()}
         >
-          {isAdmin && (
+          {/* Clock In actions */}
+          {!contextMenu.row.isClockInLocked && (
             <>
               <CtxItem icon={Edit3} label="Edit Clock In" onClick={() => { startEdit(contextMenu.row._id, "clockIn", contextMenu.row.clockIn ? new Date(contextMenu.row.clockIn).toISOString().slice(11, 16) : ""); setContextMenu(null); }} />
-              <CtxItem icon={Edit3} label="Edit Clock Out" onClick={() => { startEdit(contextMenu.row._id, "clockOut", contextMenu.row.clockOut ? new Date(contextMenu.row.clockOut).toISOString().slice(11, 16) : ""); setContextMenu(null); }} />
+              <CtxItem icon={Clock} label="Request Correction" onClick={() => setContextMenu(null)} />
               <div className="h-px bg-border my-1" />
+              <CtxItem icon={Eye} label="View Original" onClick={() => setContextMenu(null)} />
+              <CtxItem icon={Clock} label="View History" onClick={() => setContextMenu(null)} />
+              <CtxItem icon={AlertTriangle} label="View Audit" onClick={() => setContextMenu(null)} />
+              {contextMenu.row.isLate && (
+                <CtxItem icon={MoreHorizontal} label="Payroll Impact" onClick={() => setContextMenu(null)} />
+              )}
             </>
           )}
+          {/* Clock Out actions */}
+          {!contextMenu.row.isClockOutLocked && (
+            <>
+              <CtxItem icon={Edit3} label="Edit Clock Out" onClick={() => { startEdit(contextMenu.row._id, "clockOut", contextMenu.row.clockOut ? new Date(contextMenu.row.clockOut).toISOString().slice(11, 16) : ""); setContextMenu(null); }} />
+              <CtxItem icon={Clock} label="Request Correction" onClick={() => setContextMenu(null)} />
+              <div className="h-px bg-border my-1" />
+              <CtxItem icon={Eye} label="View Original" onClick={() => setContextMenu(null)} />
+              <CtxItem icon={Clock} label="View History" onClick={() => setContextMenu(null)} />
+              <CtxItem icon={AlertTriangle} label="View Audit" onClick={() => setContextMenu(null)} />
+            </>
+          )}
+          {/* Break actions */}
+          {contextMenu.row.isOnBreak && (
+            <>
+              <CtxItem icon={Edit3} label="Edit Break" onClick={() => setContextMenu(null)} />
+              <CtxItem icon={Coffee} label="Add Break" onClick={() => setContextMenu(null)} />
+              <CtxItem icon={PlayCircle} label="Remove Break" onClick={() => setContextMenu(null)} />
+              <div className="h-px bg-border my-1" />
+              <CtxItem icon={Eye} label="View Break History" onClick={() => setContextMenu(null)} />
+            </>
+          )}
+          {/* Activity actions */}
+          {contextMenu.row.isWorkingAndNotOnBreak && (
+            <>
+              <CtxItem icon={Activity} label="Change Activity" onClick={() => setContextMenu(null)} />
+              <CtxItem icon={MoreHorizontal} label="Split Activity" onClick={() => setContextMenu(null)} />
+              <CtxItem icon={Eye} label="View Timeline" onClick={() => setContextMenu(null)} />
+            </>
+          )}
+          {/* Row actions */}
           <CtxItem icon={Eye} label="View Details" onClick={() => { onRowClick?.(contextMenu.row); setContextMenu(null); }} />
           <CtxItem icon={User} label="View Employee" onClick={() => setContextMenu(null)} />
           <CtxItem icon={Clock} label="View Timeline" onClick={() => setContextMenu(null)} />
           <CtxItem icon={AlertTriangle} label="Create Correction" onClick={() => setContextMenu(null)} />
+          {isAdmin && (
+            <>
+              <div className="h-px bg-border my-1" />
+              <CtxItem icon={Lock} label={contextMenu.row.isLocked ? "Unlock" : "Lock"} onClick={() => setContextMenu(null)} />
+              {contextMenu.row.status !== "locked" && (
+                <CtxItem icon={MoreHorizontal} label="Payroll Impact" onClick={() => setContextMenu(null)} />
+              )}
+            </>
+          )}
         </div>
       )}
     </div>

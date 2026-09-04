@@ -178,3 +178,15 @@ export function calculateOvertime(
   const overtimePay = (overtimeMinutes / 60) * multiplier;
   return { regularMinutes, overtimeMinutes, overtimePay };
 }
+
+// ─── Re--export central calculation engine ────────────────────────────────────────────
+export { calculateAttendance } from "./calc";
+export { calculateTotalBreaks } from "./calc";
+export { calculateActivityTotals } from "./calc";
+export { calculateScheduledMinutes } from "./calc";
+export { formatMinutes } from "./calc";
+export { formatTimer } from "./calc";
+export { minutesBetween } from "./calc";
+export { applyRounding } from "./calc";
+export { getShiftStartMs } from "./calc";
+export { getShiftEndMs } from "./calc";

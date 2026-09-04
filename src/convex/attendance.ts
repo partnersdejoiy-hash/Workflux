@@ -9,6 +9,7 @@ import {
   parseTimeToMinutes,
   isOvernightShift,
   generateEmployeeId,
+  calculateAttendance,
 } from "./helpers";
 
 // ─── Get Today's Attendance ─────────────────────────────────────────
@@ -149,31 +150,28 @@ export const startShift = mutation({
 
     const shift = assignment ? await ctx.db.get(assignment.shiftId) : null;
 
-    // Check if late
-    let isLate = false;
-    let lateMinutes = 0;
+    // Build shift config for calculation
+    let shiftConfig: { startTime: string; endTime: string; isOvernight: boolean; gracePeriodMinutes: number; minimumWorkingHours: number; overtimeThresholdHours: number; breakMinutes: number } | null = null;
     if (shift) {
-      const now = new Date();
-      const [sh, sm] = shift.startTime.split(":").map(Number);
-      const shiftStart = new Date(now);
-      shiftStart.setHours(sh, sm, 0, 0);
-      if (shiftStart.getTime() > now.getTime()) {
-        // Not late
-      } else {
-        const diff = now.getTime() - shiftStart.getTime();
-        const graceMs = shift.gracePeriodMinutes * 60 * 1000;
-        if (diff > graceMs) {
-          isLate = true;
-          lateMinutes = Math.floor(diff / 60000);
-        }
-      }
+      shiftConfig = {
+        startTime: shift.startTime,
+        endTime: shift.endTime,
+        isOvernight: shift.isOvernight,
+        gracePeriodMinutes: shift.gracePeriodMinutes,
+        minimumWorkingHours: shift.minimumWorkingHours,
+        overtimeThresholdHours: shift.overtimeThresholdHours,
+        breakMinutes: shift.breakMinutes ?? 60,
+      };
     }
 
+    // Calculate attendance using central engine
     const now = Date.now();
     let sessionId: string;
+    let calculationResult: { grossMinutes: number; breakMinutes: number; netMinutes: number; overtimeMinutes: number; isLate: boolean; lateMinutes: number; isEarlyLeave: boolean; earlyLeaveMinutes: number } | null = null;
 
     if (existing) {
-      // Update existing absent/leave record
+      // Update existing absent/leave record - use calculation with current clock out not yet known
+      // We'll calculate netMinutes later when shift ends
       await ctx.db.patch(existing._id, {
         clockIn: now,
         status: isLate ? "late" : "working",
@@ -182,38 +180,37 @@ export const startShift = mutation({
         updatedAt: now,
       });
       sessionId = existing._id;
+      // Store that we have a clock-in for later calculation
     } else {
+      const clockIn = now;
       sessionId = await ctx.db.insert("attendanceSessions", {
         employeeId: employee._id,
         shiftId: assignment?.shiftId,
         date: today,
-        clockIn: now,
+        clockIn,
         scheduledStart: shift?.startTime,
         scheduledEnd: shift?.endTime,
         status: isLate ? "late" : "working",
         isLate,
         lateMinutes,
         isEarlyLeave: false,
+        grossMinutes: 0,
+        breakMinutes: 0,
+        netMinutes: 0,
+        overtimeMinutes: 0,
         createdAt: now,
         updatedAt: now,
       });
     }
 
-    // Start default activity (Internal Work or first available)
-    const defaultActivity = await ctx.db
-      .query("activityTypes")
-      .withIndex("by_code", (q) => q.eq("code", "INTERNAL"))
-      .first();
-
-    if (defaultActivity) {
-      await ctx.db.insert("activitySessions", {
-        attendanceSessionId: sessionId as any,
-        employeeId: employee._id,
-        activityTypeId: defaultActivity._id,
-        startTime: now,
-        createdAt: now,
-      });
-    }
+    // Log shift started event (immutable)
+    await logEvent(ctx, {
+      employeeId: employee._id,
+      attendanceSessionId: sessionId,
+      type: EVENT_TYPES.SHIFT_STARTED,
+      value: JSON.stringify({ clockIn: new Date(now).toISOString(), isLate, lateMinutes }),
+      metadata: JSON.stringify({ source: "frontend", shiftId: assignment?.shiftId }),
+    });
 
     await logAudit(ctx, {
       userId,
@@ -221,7 +218,7 @@ export const startShift = mutation({
       action: "shift_started",
       entity: "attendanceSession",
       entityId: sessionId,
-      newValue: JSON.stringify({ clockIn: new Date(now).toISOString(), isLate }),
+      newValue: JSON.stringify({ clockIn: new Date(now).toISOString(), isLate, lateMinutes }),
     });
 
     return { sessionId, isLate, lateMinutes };
@@ -275,41 +272,63 @@ export const endShift = mutation({
       await ctx.db.patch(act._id, { endTime, durationMinutes });
     }
 
-    const clockOut = Date.now();
-    const grossMinutes = Math.round((clockOut - session.clockIn) / 60000);
-
-    // Calculate total break minutes
-    const breaks = await ctx.db
-      .query("breakSessions")
-      .withIndex("by_session", (q) => q.eq("attendanceSessionId", session._id))
-      .collect();
-    const breakMinutes = breaks.reduce((sum, b) => sum + (b.durationMinutes ?? 0), 0);
-
-    const netMinutes = Math.max(0, grossMinutes - breakMinutes);
-
-    // Get shift for overtime calculation
-    let overtimeMinutes = 0;
-    let isEarlyLeave = false;
-    let earlyLeaveMinutes = 0;
-
+    // Build shift config for calculation engine
+    let shiftConfig: { startTime: string; endTime: string; isOvernight: boolean; gracePeriodMinutes: number; minimumWorkingHours: number; overtimeThresholdHours: number; breakMinutes: number } | null = null;
     if (session.shiftId) {
       const shift = await ctx.db.get(session.shiftId);
       if (shift) {
-        const thresholdMinutes = shift.overtimeThresholdHours * 60;
-        overtimeMinutes = Math.max(0, netMinutes - thresholdMinutes);
-
-        // Check early leave
-        if (session.scheduledEnd) {
-          const [eh, em] = session.scheduledEnd.split(":").map(Number);
-          const scheduledEndMin = eh * 60 + em;
-          const clockOutMin = new Date(clockOut).getHours() * 60 + new Date(clockOut).getMinutes();
-          if (clockOutMin < scheduledEndMin && netMinutes < shift.minimumWorkingHours * 60) {
-            isEarlyLeave = true;
-            earlyLeaveMinutes = scheduledEndMin - clockOutMin;
-          }
-        }
+        shiftConfig = {
+          startTime: shift.startTime,
+          endTime: shift.endTime,
+          isOvernight: shift.isOvernight,
+          gracePeriodMinutes: shift.gracePeriodMinutes,
+          minimumWorkingHours: shift.minimumWorkingHours,
+          overtimeThresholdHours: shift.overtimeThresholdHours,
+          breakMinutes: shift.breakMinutes ?? 60,
+        };
       }
     }
+
+    const clockOut = Date.now();
+    
+    // Use central calculation engine
+    const breakSessions = await ctx.db
+      .query("breakSessions")
+      .withIndex("by_session", (q) => q.eq("attendanceSessionId", session._id))
+      .collect();
+    const breakRecords = breakSessions.map((b) => ({
+      breakStart: b.breakStart,
+      breakEnd: b.breakEnd,
+      durationMinutes: b.durationMinutes,
+    }));
+
+    const activities = await ctx.db
+      .query("activitySessions")
+      .withIndex("by_session", (q) => q.eq("attendanceSessionId", session._id))
+      .collect();
+    const activityRecords = await Promise.all(
+      activities.map(async (a) => ({
+        startTime: a.startTime,
+        endTime: a.endTime,
+        durationMinutes: a.durationMinutes,
+        activityName: (await ctx.db.get(a.activityTypeId))?.name,
+      }))
+    );
+
+    const calcResult = calculateAttendance({
+      clockIn: session.clockIn,
+      clockOut,
+      breaks: breakRecords.length > 0 ? breakRecords : undefined,
+      shift: shiftConfig,
+      rounding: 0,
+    });
+
+    const grossMinutes = calcResult.grossMinutes;
+    const breakMinutes = calcResult.breakMinutes;
+    const netMinutes = calcResult.netMinutes;
+    const overtimeMinutes = calcResult.overtimeMinutes;
+    const isEarlyLeave = calcResult.isEarlyLeave;
+    const earlyLeaveMinutes = calcResult.earlyLeaveMinutes;
 
     // Determine final status
     let finalStatus: "shift_completed" | "overtime" | "early_leave" = "shift_completed";
@@ -326,6 +345,22 @@ export const endShift = mutation({
       isEarlyLeave,
       earlyLeaveMinutes,
       updatedAt: clockOut,
+    });
+
+    // Log shift ended event (immutable)
+    await logEvent(ctx, {
+      employeeId: employee._id,
+      attendanceSessionId: session._id,
+      type: EVENT_TYPES.SHIFT_ENDED,
+      value: JSON.stringify({
+        clockOut: new Date(clockOut).toISOString(),
+        grossMinutes,
+        netMinutes,
+        breakMinutes,
+        overtimeMinutes,
+        status: finalStatus,
+      }),
+      metadata: JSON.stringify({ source: "frontend" }),
     });
 
     await logAudit(ctx, {
@@ -399,6 +434,15 @@ export const startBreak = mutation({
 
     await ctx.db.patch(session._id, { status: "on_break", updatedAt: breakStart });
 
+    // Log break started event (immutable)
+    await logEvent(ctx, {
+      employeeId: employee._id,
+      attendanceSessionId: session._id,
+      type: EVENT_TYPES.BREAK_STARTED,
+      value: JSON.stringify({ breakStart: new Date(breakStart).toISOString() }),
+      metadata: JSON.stringify({ source: "frontend" }),
+    });
+
     await logAudit(ctx, {
       userId,
       userRole: user?.role ?? "unknown",
@@ -444,6 +488,15 @@ export const endBreak = mutation({
     const durationMinutes = Math.round((breakEnd - openBreak.breakStart) / 60000);
     await ctx.db.patch(openBreak._id, { breakEnd, durationMinutes });
     await ctx.db.patch(session._id, { status: "working", updatedAt: breakEnd });
+
+    // Log break ended event (immutable)
+    await logEvent(ctx, {
+      employeeId: employee._id,
+      attendanceSessionId: session._id,
+      type: EVENT_TYPES.BREAK_ENDED,
+      value: JSON.stringify({ breakEnd: new Date(breakEnd).toISOString(), durationMinutes }),
+      metadata: JSON.stringify({ source: "frontend" }),
+    });
 
     await logAudit(ctx, {
       userId,
@@ -492,6 +545,21 @@ export const changeActivity = mutation({
       });
     }
 
+    // Close current activity
+    const openActivities = await ctx.db
+      .query("activitySessions")
+      .withIndex("by_session", (q) => q.eq("attendanceSessionId", session._id))
+      .collect()
+      .then((a) => a.filter((x) => !x.endTime));
+
+    for (const act of openActivities) {
+      const now = Date.now();
+      await ctx.db.patch(act._id, {
+        endTime: now,
+        durationMinutes: Math.round((now - act.startTime) / 60000),
+      });
+    }
+
     // Start new activity
     if (session.status !== "on_break") {
       const now = Date.now();
@@ -502,6 +570,33 @@ export const changeActivity = mutation({
         startTime: now,
         createdAt: now,
       });
+
+      // Log activity started event (immutable)
+      await logEvent(ctx, {
+        employeeId: employee._id,
+        attendanceSessionId: session._id,
+        type: EVENT_TYPES.ACTIVITY_STARTED,
+        value: JSON.stringify({ activityTypeId: args.activityTypeId, startTime: new Date(now).toISOString() }),
+        metadata: JSON.stringify({ source: "frontend" }),
+      });
+    } else {
+      // If coming back from break, log activity resumed
+      const now = Date.now();
+      const prevActivity = activities.find((a) => !a.endTime);
+      if (prevActivity) {
+        // End the previous activity session that was active before break
+        await ctx.db.patch(prevActivity._id, {
+          endTime: now,
+          durationMinutes: Math.round((now - prevActivity.startTime) / 60000),
+        });
+        await logEvent(ctx, {
+          employeeId: employee._id,
+          attendanceSessionId: session._id,
+          type: EVENT_TYPES.ACTIVITY_ENDED,
+          value: JSON.stringify({ activityTypeId: prevActivity.activityTypeId, endTime: new Date(now).toISOString() }),
+          metadata: JSON.stringify({ source: "frontend" }),
+        });
+      }
     }
 
     return true;

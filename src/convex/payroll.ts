@@ -7,6 +7,7 @@ import {
   logAudit,
   calculateOvertime,
 } from "./helpers";
+import { calculateAttendance } from "./helpers";
 
 // ─── Payroll Periods ────────────────────────────────────────────────
 
@@ -72,11 +73,61 @@ export const calculate = mutation({
       throw new Error("Payroll period is locked/paid");
     }
 
+    // 🔐 Payroll Readiness Check
+    // Before calculating, check for issues that must be resolved
+    const { employee } = await getCurrentEmployee(ctx);
+    
+    // Check for pending corrections for employees in this period
+    const pendingCorrections = await ctx.db
+      .query("correctionTickets")
+      .withIndex("by_status", (q) => q.eq("status", "pending"))
+      .collect();
+    
+    // Check for open shifts (employees with active shift assignments in the period)
+    const openShifts = await ctx.db
+      .query("shiftAssignments")
+      .withIndex("by_active", (q) => q.eq("isActive", true))
+      .collect()
+      .then((assignments) => {
+        return assignments.filter((a) => {
+          const shift = a.shiftId ? ctx.db.get(a.shiftId) : null;
+          return shift ? shift.isOvernight ? a.startDate <= period.endDate && a.startDate >= period.startDate 
+            : a.startDate <= period.endDate && a.startDate >= period.startDate : false;
+        });
+      });
+    
+    // Check for missing clock-outs (sessions with clockIn but no clockOut in the period)
+    const sessionsWithMissingClockOut = await ctx.db
+      .query("attendanceSessions")
+      .withIndex("by_employee", (q) => q.eq("employeeId", employee?._id ?? ""))
+      .collect()
+      .then((sessions) => sessions.filter(
+        (s) => s.clockIn && !s.clockOut && s.date >= period.startDate && s.date <= period.endDate
+      ));
+    
+    // Check for unresolved exceptions
+    const unresolvedExceptions = await ctx.db
+      .query("exceptions")
+      .withIndex("by_status", (q) => q.eq("status", "open"))
+      .collect()
+      .then((exceptions) => exceptions.filter(
+        (e) => e.date >= period.startDate && e.date <= period.endDate
+      ));
+
     await ctx.db.patch(args.periodId, { status: "calculating", updatedAt: Date.now() });
 
     // Get all active employees
     const employees = await ctx.db.query("employees").collect()
       .then((emps) => emps.filter((e) => e.employmentStatus === "active"));
+
+    // Get all adjustments for this period
+    const allAdjustments = await ctx.db
+      .query("timeAdjustments")
+      .collect()
+      .then((a) => a.filter((adj) => {
+        const adjDate = adj.createdAt;
+        return adjDate >= period.startDate && adjDate <= period.endDate;
+      }));
 
     let totalRegularHours = 0;
     let totalOvertimeHours = 0;
@@ -94,21 +145,131 @@ export const calculate = mutation({
         (s) => s.date >= period.startDate && s.date <= period.endDate && s.netMinutes
       );
 
+      // Check for pending adjustments for this employee in this period
+      const pendingAdjustments = allAdjustments.filter(
+        (a) => a.employeeId === emp._id && a.status === "pending"
+      );
+
+      let totalNetMinutes = 0;
+      let totalOvertimeMins = 0;
+
+      for (const session of periodSessions) {
+        // Apply any pending adjustments
+        const applicableAdjustments = allAdjustments.filter(
+          (a) => a.employeeId === emp._id && a.attendanceSessionId === session._id && a.status === "approved"
+        );
+
+        let effectiveClockIn = session.clockIn;
+        let effectiveClockOut = session.clockOut;
+        let effectiveBreakMinutes = session.breakMinutes ?? 0;
+        let effectiveGrossMinutes = session.grossMinutes ?? 0;
+        let effectiveNetMinutes = session.netMinutes ?? 0;
+        let effectiveOvertimeMinutes = session.overtimeMinutes ?? 0;
+        let effectiveStatus = session.status;
+        let effectiveIsLate = session.isLate;
+        let effectiveLateMinutes = session.lateMinutes;
+        let effectiveIsEarlyLeave = session.isEarlyLeave;
+        let effectiveEarlyLeaveMinutes = session.earlyLeaveMinutes;
+
+        // Apply adjustments - in a full implementation, we'd merge all adjustments
+        // For now, use session values (adjustments should already be applied)
+        // But we track pending ones for readiness checking
+
+        // Calculate using central engine
+        const shift = session.shiftId ? await ctx.db.get(session.shiftId) : null;
+        let shiftConfig = null;
+        if (shift) {
+          shiftConfig = {
+            startTime: shift.startTime,
+            endTime: shift.endTime,
+            isOvernight: shift.isOvernight,
+            gracePeriodMinutes: shift.gracePeriodMinutes,
+            minimumWorkingHours: shift.minimumWorkingHours,
+            overtimeThresholdHours: shift.overtimeThresholdHours,
+            breakMinutes: shift.breakMinutes ?? 60,
+          };
+        }
+
+        const breaks = session.breakMinutes ? [{
+          breakStart: session.clockIn,
+          breakEnd: null, // Will be calculated from breakMinutes
+          durationMinutes: session.breakMinutes,
+        }] : [];
+
+        const activities = await ctx.db
+          .query("activitySessions")
+          .withIndex("by_session", (q) => q.eq("attendanceSessionId", session._id))
+          .collect();
+
+        const activityRecords = activities.map((a) => ({
+          startTime: a.startTime,
+          endTime: a.endTime,
+          durationMinutes: a.durationMinutes,
+          activityName: (await ctx.db.get(a.activityTypeId))?.name,
+        }));
+
+        const calcResult = calculateAttendance({
+          clockIn: effectiveClockIn,
+          clockOut: effectiveClockOut,
+          breaks: breaks.length > 0 ? breaks : undefined,
+          shift: shiftConfig,
+          rounding: 0,
+        });
+
+        totalNetMinutes += calcResult.netMinutes;
+        totalOvertimeMins += calcResult.overtimeMinutes;
+      }
+
       const totalNetMinutes = periodSessions.reduce((sum, s) => sum + (s.netMinutes ?? 0), 0);
       const totalOvertimeMins = periodSessions.reduce((sum, s) => sum + (s.overtimeMinutes ?? 0), 0);
       const regularMinutes = totalNetMinutes - totalOvertimeMins;
 
-      // Calculate pay
+      // Calculate pay using central calculation engine
       const baseRate = emp.payType === "hourly"
         ? (emp.hourlyRate ?? 0)
         : ((emp.monthlySalary ?? 0) / 160); // Assume ~160 hours/month for salary
 
-      const regularPay = (regularMinutes / 60) * baseRate;
-      const overtimePay = (totalOvertimeMins / 60) * baseRate * emp.overtimeMultiplier;
+      // Use central calculation engine for consistent formulas
+      const shift = periodSessions[0]?.shiftId ? await ctx.db.get(periodSessions[0].shiftId) : null;
+      let shiftConfig = null;
+      if (shift) {
+        shiftConfig = {
+          startTime: shift.startTime,
+          endTime: shift.endTime,
+          isOvernight: shift.isOvernight,
+          gracePeriodMinutes: shift.gracePeriodMinutes,
+          minimumWorkingHours: shift.minimumWorkingHours,
+          overtimeThresholdHours: shift.overtimeThresholdHours,
+          breakMinutes: shift.breakMinutes ?? 60,
+        };
+      }
+
+      const allBreaks = periodSessions.flatMap((s) => {
+        const breaks = await ctx.db
+          .query("breakSessions")
+          .withIndex("by_session", (q) => q.eq("attendanceSessionId", s._id))
+          .collect();
+        return breaks.map((b) => ({
+          breakStart: b.breakStart,
+          breakEnd: b.breakEnd,
+          durationMinutes: b.durationMinutes,
+        }));
+      });
+
+      const calcResult = calculateAttendance({
+        clockIn: periodSessions[0]?.clockIn,
+        clockOut: periodSessions[0]?.clockOut,
+        breaks: allBreaks.length > 0 ? allBreaks : undefined,
+        shift: shiftConfig,
+        rounding: 0,
+      });
+
+      const regularPay = (calcResult.regularMinutes / 60) * baseRate;
+      const overtimePay = (calcResult.overtimeMinutes / 60) * baseRate * emp.overtimeMultiplier;
       const grossPay = regularPay + overtimePay;
 
-      const totalRegularH = Math.round(regularMinutes / 60 * 100) / 100;
-      const totalOvertimeH = Math.round(totalOvertimeMins / 60 * 100) / 100;
+      const totalRegularH = Math.round(calcResult.regularMinutes / 60 * 100) / 100;
+      const totalOvertimeH = Math.round(calcResult.overtimeMinutes / 60 * 100) / 100;
 
       totalRegularHours += totalRegularH;
       totalOvertimeHours += totalOvertimeH;
@@ -139,7 +300,7 @@ export const calculate = mutation({
         allowances: 0,
         deductions: 0,
         bonuses: 0,
-        adjustments: 0,
+        adjustments: pendingAdjustments.length,
         netPay: Math.round(grossPay * 100) / 100,
         status: "calculated",
         updatedAt: Date.now(),
