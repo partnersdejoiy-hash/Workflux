@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import {
   requireAuth,
   getCurrentEmployee,
@@ -11,6 +12,7 @@ import {
   generateEmployeeId,
   calculateAttendance,
 } from "./helpers";
+import { EVENT_TYPES, logEvent } from "./events";
 
 // ─── Get Today's Attendance ─────────────────────────────────────────
 
@@ -166,7 +168,23 @@ export const startShift = mutation({
 
     // Calculate attendance using central engine
     const now = Date.now();
-    let sessionId: string;
+
+    // Determine lateness based on the assigned shift's scheduled start
+    let isLate = false;
+    let lateMinutes = 0;
+    if (shift && shift.startTime) {
+      const [hs, ms] = shift.startTime.split(":").map(Number);
+      const scheduledStart = new Date();
+      scheduledStart.setHours(hs, ms, 0, 0);
+      const lateBy = Math.round((now - scheduledStart.getTime()) / 60000);
+      const grace = Number(shift.gracePeriodMinutes ?? 0);
+      if (lateBy > grace) {
+        isLate = true;
+        lateMinutes = lateBy - grace;
+      }
+    }
+
+    let sessionId: Id<"attendanceSessions">;
     let calculationResult: { grossMinutes: number; breakMinutes: number; netMinutes: number; overtimeMinutes: number; isLate: boolean; lateMinutes: number; isEarlyLeave: boolean; earlyLeaveMinutes: number } | null = null;
 
     if (existing) {
@@ -318,8 +336,8 @@ export const endShift = mutation({
     const calcResult = calculateAttendance({
       clockIn: session.clockIn,
       clockOut,
-      breaks: breakRecords.length > 0 ? breakRecords : undefined,
-      shift: shiftConfig,
+      breaks: breakRecords,
+      shift: shiftConfig ?? undefined,
       rounding: 0,
     });
 
@@ -545,59 +563,40 @@ export const changeActivity = mutation({
       });
     }
 
-    // Close current activity
-    const openActivities = await ctx.db
-      .query("activitySessions")
-      .withIndex("by_session", (q) => q.eq("attendanceSessionId", session._id))
-      .collect()
-      .then((a) => a.filter((x) => !x.endTime));
+    // If coming back from break, close the break first (resume)
+    if (session.status === "on_break") {
+      const openBreak = await ctx.db
+        .query("breakSessions")
+        .withIndex("by_session", (q) => q.eq("attendanceSessionId", session._id))
+        .collect()
+        .then((b) => b.filter((x) => !x.breakEnd).sort((a, b) => b.breakStart - a.breakStart)[0]);
 
-    for (const act of openActivities) {
-      const now = Date.now();
-      await ctx.db.patch(act._id, {
-        endTime: now,
-        durationMinutes: Math.round((now - act.startTime) / 60000),
-      });
+      if (openBreak) {
+        const breakEnd = Date.now();
+        const durationMinutes = Math.round((breakEnd - openBreak.breakStart) / 60000);
+        await ctx.db.patch(openBreak._id, { breakEnd, durationMinutes });
+      }
+      await ctx.db.patch(session._id, { status: "working", updatedAt: Date.now() });
     }
 
     // Start new activity
-    if (session.status !== "on_break") {
-      const now = Date.now();
-      await ctx.db.insert("activitySessions", {
-        attendanceSessionId: session._id,
-        employeeId: employee._id,
-        activityTypeId: args.activityTypeId,
-        startTime: now,
-        createdAt: now,
-      });
+    const now = Date.now();
+    await ctx.db.insert("activitySessions", {
+      attendanceSessionId: session._id,
+      employeeId: employee._id,
+      activityTypeId: args.activityTypeId,
+      startTime: now,
+      createdAt: now,
+    });
 
-      // Log activity started event (immutable)
-      await logEvent(ctx, {
-        employeeId: employee._id,
-        attendanceSessionId: session._id,
-        type: EVENT_TYPES.ACTIVITY_STARTED,
-        value: JSON.stringify({ activityTypeId: args.activityTypeId, startTime: new Date(now).toISOString() }),
-        metadata: JSON.stringify({ source: "frontend" }),
-      });
-    } else {
-      // If coming back from break, log activity resumed
-      const now = Date.now();
-      const prevActivity = activities.find((a) => !a.endTime);
-      if (prevActivity) {
-        // End the previous activity session that was active before break
-        await ctx.db.patch(prevActivity._id, {
-          endTime: now,
-          durationMinutes: Math.round((now - prevActivity.startTime) / 60000),
-        });
-        await logEvent(ctx, {
-          employeeId: employee._id,
-          attendanceSessionId: session._id,
-          type: EVENT_TYPES.ACTIVITY_ENDED,
-          value: JSON.stringify({ activityTypeId: prevActivity.activityTypeId, endTime: new Date(now).toISOString() }),
-          metadata: JSON.stringify({ source: "frontend" }),
-        });
-      }
-    }
+    // Log activity started event (immutable)
+    await logEvent(ctx, {
+      employeeId: employee._id,
+      attendanceSessionId: session._id,
+      type: EVENT_TYPES.ACTIVITY_STARTED,
+      value: JSON.stringify({ activityTypeId: args.activityTypeId, startTime: new Date(now).toISOString() }),
+      metadata: JSON.stringify({ source: "frontend" }),
+    });
 
     return true;
   },

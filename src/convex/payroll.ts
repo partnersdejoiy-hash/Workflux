@@ -88,22 +88,29 @@ export const calculate = mutation({
       .query("shiftAssignments")
       .withIndex("by_active", (q) => q.eq("isActive", true))
       .collect()
-      .then((assignments) => {
-        return assignments.filter((a) => {
-          const shift = a.shiftId ? ctx.db.get(a.shiftId) : null;
-          return shift ? shift.isOvernight ? a.startDate <= period.endDate && a.startDate >= period.startDate 
-            : a.startDate <= period.endDate && a.startDate >= period.startDate : false;
-        });
+      .then(async (assignments) => {
+        const overlapping = [];
+        for (const a of assignments) {
+          if (a.startDate < period.startDate || a.startDate > period.endDate) continue;
+          if (a.shiftId) {
+            const shift = await ctx.db.get(a.shiftId);
+            if (!shift) continue;
+          }
+          overlapping.push(a);
+        }
+        return overlapping;
       });
     
     // Check for missing clock-outs (sessions with clockIn but no clockOut in the period)
-    const sessionsWithMissingClockOut = await ctx.db
-      .query("attendanceSessions")
-      .withIndex("by_employee", (q) => q.eq("employeeId", employee?._id ?? ""))
-      .collect()
-      .then((sessions) => sessions.filter(
-        (s) => s.clockIn && !s.clockOut && s.date >= period.startDate && s.date <= period.endDate
-      ));
+    const sessionsWithMissingClockOut = employee
+      ? await ctx.db
+          .query("attendanceSessions")
+          .withIndex("by_employee", (q) => q.eq("employeeId", employee._id))
+          .collect()
+          .then((sessions) => sessions.filter(
+            (s) => s.clockIn && !s.clockOut && s.date >= period.startDate && s.date <= period.endDate
+          ))
+      : [];
     
     // Check for unresolved exceptions
     const unresolvedExceptions = await ctx.db
@@ -192,27 +199,14 @@ export const calculate = mutation({
 
         const breaks = session.breakMinutes ? [{
           breakStart: session.clockIn,
-          breakEnd: null, // Will be calculated from breakMinutes
           durationMinutes: session.breakMinutes,
         }] : [];
-
-        const activities = await ctx.db
-          .query("activitySessions")
-          .withIndex("by_session", (q) => q.eq("attendanceSessionId", session._id))
-          .collect();
-
-        const activityRecords = activities.map((a) => ({
-          startTime: a.startTime,
-          endTime: a.endTime,
-          durationMinutes: a.durationMinutes,
-          activityName: (await ctx.db.get(a.activityTypeId))?.name,
-        }));
 
         const calcResult = calculateAttendance({
           clockIn: effectiveClockIn,
           clockOut: effectiveClockOut,
-          breaks: breaks.length > 0 ? breaks : undefined,
-          shift: shiftConfig,
+          breaks,
+          shift: shiftConfig ?? undefined,
           rounding: 0,
         });
 
@@ -220,8 +214,6 @@ export const calculate = mutation({
         totalOvertimeMins += calcResult.overtimeMinutes;
       }
 
-      const totalNetMinutes = periodSessions.reduce((sum, s) => sum + (s.netMinutes ?? 0), 0);
-      const totalOvertimeMins = periodSessions.reduce((sum, s) => sum + (s.overtimeMinutes ?? 0), 0);
       const regularMinutes = totalNetMinutes - totalOvertimeMins;
 
       // Calculate pay using central calculation engine
@@ -244,23 +236,27 @@ export const calculate = mutation({
         };
       }
 
-      const allBreaks = periodSessions.flatMap((s) => {
-        const breaks = await ctx.db
-          .query("breakSessions")
-          .withIndex("by_session", (q) => q.eq("attendanceSessionId", s._id))
-          .collect();
-        return breaks.map((b) => ({
-          breakStart: b.breakStart,
-          breakEnd: b.breakEnd,
-          durationMinutes: b.durationMinutes,
-        }));
-      });
+      const allBreaks = (
+        await Promise.all(
+          periodSessions.map(async (s) => {
+            const breaks = await ctx.db
+              .query("breakSessions")
+              .withIndex("by_session", (q) => q.eq("attendanceSessionId", s._id))
+              .collect();
+            return breaks.map((b) => ({
+              breakStart: b.breakStart,
+              breakEnd: b.breakEnd,
+              durationMinutes: b.durationMinutes,
+            }));
+          })
+        )
+      ).flat();
 
       const calcResult = calculateAttendance({
         clockIn: periodSessions[0]?.clockIn,
         clockOut: periodSessions[0]?.clockOut,
-        breaks: allBreaks.length > 0 ? allBreaks : undefined,
-        shift: shiftConfig,
+        breaks: allBreaks,
+        shift: shiftConfig ?? undefined,
         rounding: 0,
       });
 

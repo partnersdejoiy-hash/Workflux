@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo, type ReactNode } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,8 @@ import {
   Lock,
   CheckIcon,
   Coffee,
+  PlayCircle,
+  Activity,
 } from "lucide-react";
 import { calculateAttendance } from "@/convex/helpers";
 import { useQuery as useConvexQuery } from "convex/react";
@@ -333,7 +335,7 @@ export default function TimesheetGrid({
     }
 
     // Edited indicator
-    let editedBadge = "";
+    let editedBadge: ReactNode = null;
     if (hasAdjustment) {
       editedBadge = (
         <Badge variant="outline" className="text-[7px] ml-1" style={{ background: "bg-terminal-green/10", color: "text-terminal-green" }}>

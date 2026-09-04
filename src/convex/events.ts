@@ -1,5 +1,6 @@
 import { v } from "convex/values";
-import { query, mutation } from "./_generated/server";
+import { query, mutation, type MutationCtx } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { requireAuth, getCurrentEmployee } from "./helpers";
 
 // ═══════════════════════════════════════════════════════════════════
@@ -24,33 +25,35 @@ export const EVENT_TYPES = {
 } as const;
 
 // ─── Log an event ────────────────────────────────────────────────
+// Plain helper (not a public mutation) so other convex functions can
+// call it directly with (ctx, args).
 
-export const logEvent = mutation({
+export async function logEvent(
+  ctx: MutationCtx,
   args: {
-    employeeId: v.id("employees"),
-    attendanceSessionId: v.optional(v.id("attendanceSessions")),
-    type: v.string(),
-    value: v.optional(v.string()),
-    metadata: v.optional(v.string()),
-  },
-  handler: async (ctx, args) => {
-    const { userId } = await requireAuth(ctx);
-    const now = Date.now();
+    employeeId: Id<"employees">;
+    attendanceSessionId?: Id<"attendanceSessions">;
+    type: string;
+    value?: string;
+    metadata?: string;
+  }
+) {
+  const { userId } = await requireAuth(ctx);
+  const now = Date.now();
 
-    const eventId = await ctx.db.insert("attendanceEvents", {
-      employeeId: args.employeeId,
-      attendanceSessionId: args.attendanceSessionId,
-      type: args.type,
-      timestamp: now,
-      value: args.value,
-      metadata: args.metadata,
-      createdBy: userId,
-      createdAt: now,
-    });
+  const eventId = await ctx.db.insert("attendanceEvents", {
+    employeeId: args.employeeId,
+    attendanceSessionId: args.attendanceSessionId,
+    type: args.type,
+    timestamp: now,
+    value: args.value,
+    metadata: args.metadata,
+    createdBy: userId,
+    createdAt: now,
+  });
 
-    return eventId;
-  },
-});
+  return eventId;
+}
 
 // ─── Query events ────────────────────────────────────────────────
 

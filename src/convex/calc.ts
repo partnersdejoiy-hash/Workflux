@@ -196,22 +196,22 @@ export function formatTimer(ms: number): string {
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
-function minutesBetween(startMs: number, endMs: number): number {
+export function minutesBetween(startMs: number, endMs: number): number {
   return Math.round((endMs - startMs) / 60000);
 }
 
-function applyRounding(minutes: number, rounding: number): number {
+export function applyRounding(minutes: number, rounding: number): number {
   if (rounding <= 0) return minutes;
   return Math.round(minutes / rounding) * rounding;
 }
 
-function getShiftStartMs(referenceMs: number, startH: number, startM: number, isOvernight: boolean): number {
+export function getShiftStartMs(referenceMs: number, startH: number, startM: number, isOvernight: boolean): number {
   const d = new Date(referenceMs);
   d.setHours(startH, startM, 0, 0);
   return d.getTime();
 }
 
-function getShiftEndMs(referenceMs: number, endH: number, endM: number, isOvernight: boolean): number {
+export function getShiftEndMs(referenceMs: number, endH: number, endM: number, isOvernight: boolean): number {
   const d = new Date(referenceMs);
   if (isOvernight) {
     d.setDate(d.getDate() + 1);
