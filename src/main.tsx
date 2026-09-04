@@ -15,8 +15,8 @@ const Landing = lazy(() => import("./pages/Landing.tsx"));
 const AuthPage = lazy(() => import("./pages/Auth.tsx"));
 const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 
-// App pages (lazy loaded)
-const AppShell = lazy(() => import("./components/AppShell.tsx"));
+// App shell - eagerly imported to avoid chunk-load issues with nested lazy
+import AppShell from "./components/AppShell.tsx";
 const EmployeeDashboard = lazy(() => import("./pages/EmployeeDashboard.tsx"));
 const AdminDashboard = lazy(() => import("./pages/AdminDashboard.tsx"));
 const LiveAttendance = lazy(() => import("./pages/LiveAttendance.tsx"));
