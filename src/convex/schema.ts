@@ -486,6 +486,112 @@ const schema = defineSchema(
       updatedBy: v.optional(v.id("users")),
       updatedAt: v.number(),
     }).index("by_key", ["key"]),
+
+    // ═════════════════════════════════════════════════════════════
+    // WORKFLUX 2.0 — EVENT-ORIENTED TIMEKEEPING
+    // ═════════════════════════════════════════════════════════════
+
+    // ─── Attendance Events (immutable log) ──────────────────────
+    attendanceEvents: defineTable({
+      employeeId: v.id("employees"),
+      attendanceSessionId: v.optional(v.id("attendanceSessions")),
+      type: v.string(), // SHIFT_STARTED, SHIFT_ENDED, BREAK_STARTED, BREAK_ENDED, ACTIVITY_STARTED, ACTIVITY_ENDED, CLOCK_ADJUSTED, CORRECTION_REQUESTED, CORRECTION_APPROVED, CORRECTION_REJECTED, MANUAL_ADJUSTMENT
+      timestamp: v.number(),
+      value: v.optional(v.string()), // JSON of the event data
+      metadata: v.optional(v.string()), // JSON metadata (device, IP, etc.)
+      createdBy: v.id("users"),
+      createdAt: v.number(),
+    }).index("by_employee", ["employeeId"])
+      .index("by_session", ["attendanceSessionId"])
+      .index("by_type", ["type"])
+      .index("by_timestamp", ["timestamp"])
+      .index("by_employee_date", ["employeeId", "timestamp"]),
+
+    // ─── Time Adjustments (official edits) ──────────────────────
+    timeAdjustments: defineTable({
+      employeeId: v.id("employees"),
+      attendanceSessionId: v.id("attendanceSessions"),
+      field: v.string(), // clockIn, clockOut, breakMinutes, etc.
+      originalValue: v.string(),
+      newValue: v.string(),
+      reason: v.string(),
+      adjustmentType: v.string(), // "admin_edit", "correction_approved", "payroll_adjustment"
+      status: v.string(), // "pending", "approved", "rejected", "applied"
+      requestedBy: v.id("users"),
+      approvedBy: v.optional(v.id("users")),
+      approvedAt: v.optional(v.number()),
+      rejectionReason: v.optional(v.string()),
+      payrollImpact: v.optional(v.number()), // estimated payroll impact in cents
+      auditId: v.optional(v.string()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    }).index("by_employee", ["employeeId"])
+      .index("by_session", ["attendanceSessionId"])
+      .index("by_status", ["status"])
+      .index("by_requestedBy", ["requestedBy"])
+      .index("by_createdAt", ["createdAt"]),
+
+    // ─── Exceptions ─────────────────────────────────────────────
+    exceptions: defineTable({
+      employeeId: v.id("employees"),
+      attendanceSessionId: v.optional(v.id("attendanceSessions")),
+      date: v.number(),
+      type: v.string(), // missing_clock_in, missing_clock_out, long_break, short_hours, late_arrival, early_departure, overtime, no_activity, shift_without_activity, overlapping_activity, etc.
+      severity: v.string(), // "critical", "warning", "info"
+      description: v.string(),
+      expectedValue: v.optional(v.string()),
+      actualValue: v.optional(v.string()),
+      status: v.string(), // "open", "resolved", "ignored", "correction_requested"
+      resolvedBy: v.optional(v.id("users")),
+      resolvedAt: v.optional(v.number()),
+      resolution: v.optional(v.string()),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    }).index("by_employee", ["employeeId"])
+      .index("by_date", ["date"])
+      .index("by_status", ["status"])
+      .index("by_type", ["type"])
+      .index("by_severity", ["severity"]),
+
+    // ─── Saved Views ────────────────────────────────────────────
+    savedViews: defineTable({
+      userId: v.id("users"),
+      name: v.string(),
+      type: v.string(), // "timesheet", "live", "payroll"
+      config: v.string(), // JSON: { columns, filters, sorting, grouping, dateRange }
+      isDefault: v.boolean(),
+      createdAt: v.number(),
+      updatedAt: v.number(),
+    }).index("by_user", ["userId"])
+      .index("by_user_type", ["userId", "type"]),
+
+    // ─── Timesheet Locks (row-level) ────────────────────────────
+    timesheetLocks: defineTable({
+      employeeId: v.id("employees"),
+      payrollPeriodId: v.optional(v.id("payrollPeriods")),
+      startDate: v.number(),
+      endDate: v.number(),
+      lockedBy: v.id("users"),
+      lockedAt: v.number(),
+      reason: v.optional(v.string()),
+    }).index("by_employee", ["employeeId"])
+      .index("by_period", ["payrollPeriodId"]),
+
+    // ─── Role Permissions ───────────────────────────────────────
+    rolePermissions: defineTable({
+      role: v.string(),
+      permissions: v.array(v.string()), // Array of permission strings
+      updatedAt: v.number(),
+      updatedBy: v.optional(v.id("users")),
+    }).index("by_role", ["role"]),
+
+    // ─── Payroll Locks ──────────────────────────────────────────
+    payrollLocks: defineTable({
+      payrollPeriodId: v.id("payrollPeriods"),
+      lockedBy: v.id("users"),
+      lockedAt: v.number(),
+      adjustmentsAfterLock: v.number(),
+    }).index("by_period", ["payrollPeriodId"]),
   },
   {
     schemaValidation: false,

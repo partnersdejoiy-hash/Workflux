@@ -39,7 +39,7 @@ export const list = query({
   },
 });
 
-// ─── Notifications ──────────────────────────────────────────────────
+// ─── Notifications ──────────────────────────────────────────────
 
 export const getMyNotifications = query({
   args: {},
@@ -95,5 +95,45 @@ export const markAllAsRead = mutation({
       await ctx.db.patch(n._id, { isRead: true });
     }
     return true;
+  },
+});
+
+// ─── Enhanced audit actions list ─────────────────────────────────
+
+export const getActionTypes = query({
+  args: {},
+  handler: async () => {
+    return [
+      "shift_started",
+      "shift_ended",
+      "break_started",
+      "break_ended",
+      "activity_created",
+      "activity_updated",
+      "employee_created",
+      "employee_updated",
+      "department_created",
+      "department_updated",
+      "team_created",
+      "team_updated",
+      "shift_created",
+      "shift_updated",
+      "shift_assigned",
+      "ticket_created",
+      "ticket_approved",
+      "ticket_rejected",
+      "adjustment_created",
+      "adjustment_approved",
+      "adjustment_rejected",
+      "adjustment_quick_applied",
+      "payroll_calculated",
+      "payroll_approved",
+      "payroll_locked",
+      "setting_updated",
+      "holiday_added",
+      "holiday_removed",
+      "attendance_corrected",
+      "login",
+    ];
   },
 });

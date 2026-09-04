@@ -36,6 +36,7 @@ export default function AdminDashboard() {
   const liveAttendance = useQuery(api.attendance.getLiveAttendance);
   const pendingCorrections = useQuery(api.corrections.list, { status: "pending", pageSize: 5 });
   const currentPeriod = useQuery(api.payroll.getCurrentPeriod);
+  const exceptionCounts = useQuery(api.exceptions.getCounts);
 
   if (!stats) {
     return (
@@ -68,6 +69,13 @@ export default function AdminDashboard() {
     { label: "Total Hours Today", value: `${stats.totalHours}h`, icon: Timer, color: "text-terminal-green" },
     { label: "Overtime Today", value: `${stats.overtimeHours}h`, icon: TrendingUp, color: "text-terminal-amber" },
   ];
+
+  const exceptionCards = exceptionCounts ? [
+    { label: "Open Exceptions", value: exceptionCounts.open, color: "text-terminal-red", severity: "critical" },
+    { label: "Critical", value: exceptionCounts.critical, color: "text-terminal-red" },
+    { label: "Warnings", value: exceptionCounts.warning, color: "text-terminal-amber" },
+    { label: "Info", value: exceptionCounts.info, color: "text-terminal-blue" },
+  ] : [];
 
   const workingEmployees = liveAttendance?.filter(
     (e) => e.status === "working" || e.status === "late" || e.status === "on_break"
@@ -118,6 +126,36 @@ export default function AdminDashboard() {
           </Card>
         ))}
       </div>
+
+      {/* Exception Summary */}
+      {exceptionCounts && exceptionCounts.open > 0 && (
+        <Card className="terminal-card border-terminal-red/20">
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-terminal-red" />
+                Exceptions ({exceptionCounts.open})
+              </CardTitle>
+            </div>
+          </CardHeader>
+          <CardContent className="p-3">
+            <div className="grid grid-cols-3 gap-3">
+              <div className="text-center p-2 bg-terminal-red/5 rounded border border-terminal-red/10">
+                <p className="text-lg font-bold text-terminal-red timer-display">{exceptionCounts.critical}</p>
+                <p className="text-[9px] text-muted-foreground uppercase">Critical</p>
+              </div>
+              <div className="text-center p-2 bg-terminal-amber/5 rounded border border-terminal-amber/10">
+                <p className="text-lg font-bold text-terminal-amber timer-display">{exceptionCounts.warning}</p>
+                <p className="text-[9px] text-muted-foreground uppercase">Warnings</p>
+              </div>
+              <div className="text-center p-2 bg-terminal-blue/5 rounded border border-terminal-blue/10">
+                <p className="text-lg font-bold text-terminal-blue timer-display">{exceptionCounts.info}</p>
+                <p className="text-[9px] text-muted-foreground uppercase">Info</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
