@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
-import { requireAuth } from "./helpers";
+import { requireAuth, getCurrentEmployee } from "./helpers";
 
 export const list = query({
   args: {
@@ -44,7 +44,6 @@ export const list = query({
 export const getMyNotifications = query({
   args: {},
   handler: async (ctx) => {
-    const { getCurrentEmployee } = await import("./helpers");
     const { userId } = await getCurrentEmployee(ctx);
     if (!userId) return [];
 
@@ -61,7 +60,6 @@ export const getMyNotifications = query({
 export const getUnreadCount = query({
   args: {},
   handler: async (ctx) => {
-    const { getCurrentEmployee } = await import("./helpers");
     const { userId } = await getCurrentEmployee(ctx);
     if (!userId) return 0;
 
@@ -85,7 +83,6 @@ export const markAsRead = mutation({
 export const markAllAsRead = mutation({
   args: {},
   handler: async (ctx) => {
-    const { getCurrentEmployee } = await import("./helpers");
     const { userId } = await getCurrentEmployee(ctx);
     if (!userId) return false;
 

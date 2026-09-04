@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
-import { requireAuth, logAudit } from "./helpers";
+import { requireAuth, getCurrentEmployee, getTodayYMD, logAudit } from "./helpers";
 
 export const list = query({
   args: {},
@@ -86,11 +86,9 @@ export const getMyTimeline = query({
 export const getMyActivitiesToday = query({
   args: {},
   handler: async (ctx) => {
-    const { getCurrentEmployee } = await import("./helpers");
     const { employee } = await getCurrentEmployee(ctx);
     if (!employee) return [];
 
-    const { getTodayYMD } = await import("./helpers");
     const today = getTodayYMD();
     
     const session = await ctx.db

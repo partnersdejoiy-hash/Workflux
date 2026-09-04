@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
-import { requireAuth, logAudit, parseTimeToMinutes, isOvernightShift } from "./helpers";
+import { requireAuth, getCurrentEmployee, logAudit, parseTimeToMinutes, isOvernightShift } from "./helpers";
 
 export const list = query({
   args: { departmentId: v.optional(v.id("departments")) },
@@ -192,7 +192,7 @@ export const getAssignments = query({
 export const getMyAssignment = query({
   args: {},
   handler: async (ctx) => {
-    const { employee } = await (await import("./helpers")).getCurrentEmployee(ctx);
+    const { employee } = await getCurrentEmployee(ctx);
     if (!employee) return null;
 
     const assignment = await ctx.db
