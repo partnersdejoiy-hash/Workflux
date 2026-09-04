@@ -8,6 +8,7 @@ import {
   getTodayYMD,
   parseTimeToMinutes,
   isOvernightShift,
+  generateEmployeeId,
 } from "./helpers";
 
 // ─── Get Today's Attendance ─────────────────────────────────────────
@@ -69,8 +70,56 @@ export const getToday = query({
 export const startShift = mutation({
   args: {},
   handler: async (ctx) => {
-    const { userId, user, employee } = await getCurrentEmployee(ctx);
-    if (!employee) throw new Error("Employee profile not found");
+    let { userId, user, employee } = await getCurrentEmployee(ctx);
+
+    // Auto-create employee profile if missing
+    if (!employee) {
+      const now = Date.now();
+      const existingCount = await ctx.db.query("employees").collect();
+      const empIdStr = generateEmployeeId(existingCount.length + 1);
+
+      // Find default department (first available)
+      const defaultDept = await ctx.db.query("departments").first();
+      if (!defaultDept) throw new Error("No departments configured. Please seed the database first.");
+
+      // Find default shift (Morning Shift or first available)
+      const defaultShift = await ctx.db.query("shifts").first();
+
+      const newEmpId = await ctx.db.insert("employees", {
+        userId: userId!,
+        employeeId: empIdStr,
+        firstName: user?.name?.split(" ")[0] || "New",
+        lastName: user?.name?.split(" ").slice(1).join(" ") || "Employee",
+        email: user?.email || "",
+        departmentId: defaultDept._id,
+        joiningDate: now,
+        employmentStatus: "active",
+        payType: "salary",
+        monthlySalary: 50000,
+        overtimeMultiplier: 1.5,
+        holidayMultiplier: 2.0,
+        timezone: "UTC",
+        createdAt: now,
+        updatedAt: now,
+      });
+
+      // Assign default shift
+      if (defaultShift) {
+        await ctx.db.insert("shiftAssignments", {
+          employeeId: newEmpId,
+          shiftId: defaultShift._id,
+          startDate: now,
+          isActive: true,
+          createdAt: now,
+        });
+      }
+
+      // Update user role
+      await ctx.db.patch(userId!, { role: "employee" });
+
+      employee = await ctx.db.get(newEmpId);
+    }
+    if (!employee) throw new Error("Failed to create employee profile");
 
     const today = getTodayYMD();
 
