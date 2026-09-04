@@ -17,13 +17,19 @@ export const list = query({
     pageSize: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    const { user, employee } = await getCurrentEmployee(ctx);
+    const isApprover = !!user && canApproveCorrections(user.role);
+    // Non-approvers may only ever see their own tickets.
+    const requestedId = isApprover ? args.employeeId : employee?._id;
+    if (!isApprover && !employee) return { data: [], total: 0, page: args.page ?? 0, pageSize: args.pageSize ?? 25 };
+
     let tickets = await ctx.db.query("correctionTickets").collect();
 
     if (args.status) {
       tickets = tickets.filter((t) => t.status === args.status);
     }
-    if (args.employeeId) {
-      tickets = tickets.filter((t) => t.employeeId === args.employeeId);
+    if (requestedId) {
+      tickets = tickets.filter((t) => t.employeeId === requestedId);
     }
 
     tickets.sort((a, b) => b.createdAt - a.createdAt);

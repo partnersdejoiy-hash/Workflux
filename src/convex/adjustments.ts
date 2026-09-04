@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
-import { requireAuth, getCurrentEmployee, logAudit } from "./helpers";
+import { requireAuth, getCurrentEmployee, logAudit, hasEmployeeManagementAccess, createNotification } from "./helpers";
 
 // ═══════════════════════════════════════════════════════════════════
 // WORKFLUX 2.0 — TIME ADJUSTMENT SYSTEM
@@ -64,7 +64,8 @@ export const approve = mutation({
     note: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const { userId, user } = await requireAuth(ctx);
+    const { userId, user } = await getCurrentEmployee(ctx);
+    if (!user || !hasEmployeeManagementAccess(user.role)) throw new Error("Insufficient permissions");
     const now = Date.now();
 
     const adjustment = await ctx.db.get(args.adjustmentId);
@@ -94,6 +95,19 @@ export const approve = mutation({
       await ctx.db.patch(adjustment.attendanceSessionId, updates);
     }
 
+    // Notify the affected employee
+    const affectedEmp = await ctx.db.get(adjustment.employeeId);
+    if (affectedEmp) {
+      await createNotification(ctx, {
+        userId: affectedEmp.userId,
+        type: "adjustment_approved",
+        title: "Time Adjustment Approved",
+        message: `Your ${adjustment.field} adjustment was approved and applied`,
+        entityId: args.adjustmentId,
+        entityType: "timeAdjustment",
+      });
+    }
+
     await logAudit(ctx, {
       userId,
       userRole: user?.role ?? "unknown",
@@ -115,8 +129,13 @@ export const reject = mutation({
     reason: v.string(),
   },
   handler: async (ctx, args) => {
-    const { userId, user } = await requireAuth(ctx);
+    const { userId, user } = await getCurrentEmployee(ctx);
+    if (!user || !hasEmployeeManagementAccess(user.role)) throw new Error("Insufficient permissions");
     const now = Date.now();
+
+    const adjustment = await ctx.db.get(args.adjustmentId);
+    if (!adjustment) throw new Error("Adjustment not found");
+    if (adjustment.status !== "pending") throw new Error("Adjustment is not pending");
 
     await ctx.db.patch(args.adjustmentId, {
       status: "rejected",
@@ -125,6 +144,18 @@ export const reject = mutation({
       rejectionReason: args.reason,
       updatedAt: now,
     });
+
+    const affectedEmp = await ctx.db.get(adjustment.employeeId);
+    if (affectedEmp) {
+      await createNotification(ctx, {
+        userId: affectedEmp.userId,
+        type: "adjustment_rejected",
+        title: "Time Adjustment Rejected",
+        message: `Your ${adjustment.field} adjustment was rejected${args.reason ? `: ${args.reason}` : ""}`,
+        entityId: args.adjustmentId,
+        entityType: "timeAdjustment",
+      });
+    }
 
     await logAudit(ctx, {
       userId,
@@ -149,7 +180,10 @@ export const quickApply = mutation({
     reason: v.string(),
   },
   handler: async (ctx, args) => {
-    const { userId, user } = await requireAuth(ctx);
+    const { userId, user } = await getCurrentEmployee(ctx);
+    if (!user || !hasEmployeeManagementAccess(user.role)) {
+      throw new Error("Direct edits require manager/admin permission");
+    }
     const now = Date.now();
 
     const session = await ctx.db.get(args.attendanceSessionId);
@@ -213,10 +247,16 @@ export const list = query({
     pageSize: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    const { user, employee } = await getCurrentEmployee(ctx);
+    const isApprover = !!user && hasEmployeeManagementAccess(user.role);
+    // Non-approvers may only ever see their own adjustments.
+    const requestedId = isApprover ? args.employeeId : employee?._id;
+    if (!isApprover && !employee) return { data: [], total: 0, page: args.page ?? 0, pageSize: args.pageSize ?? 25 };
+
     let adjustments = await ctx.db.query("timeAdjustments").collect();
 
     if (args.status) adjustments = adjustments.filter((a) => a.status === args.status);
-    if (args.employeeId) adjustments = adjustments.filter((a) => a.employeeId === args.employeeId);
+    if (requestedId) adjustments = adjustments.filter((a) => a.employeeId === requestedId);
 
     adjustments.sort((a, b) => b.createdAt - a.createdAt);
 

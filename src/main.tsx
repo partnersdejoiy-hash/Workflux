@@ -1,7 +1,6 @@
 import '@vly-ai/integrations';
 import { Toaster } from "@/components/ui/sonner";
 import { RequireAuth } from "@/components/RequireAuth";
-import { useAuth } from "@/hooks/use-auth";
 import { VlyToolbar } from "../vly-toolbar-readonly.tsx";
 import { ConvexAuthProvider } from "@convex-dev/auth/react";
 import { ConvexReactClient } from "convex/react";
@@ -18,7 +17,7 @@ const NotFound = lazy(() => import("./pages/NotFound.tsx"));
 // App shell - eagerly imported to avoid chunk-load issues with nested lazy
 import AppShell from "./components/AppShell.tsx";
 const EmployeeDashboard = lazy(() => import("./pages/EmployeeDashboard.tsx"));
-const AdminDashboard = lazy(() => import("./pages/AdminDashboard.tsx"));
+const DashboardHome = lazy(() => import("./pages/DashboardHome.tsx"));
 const LiveAttendance = lazy(() => import("./pages/LiveAttendance.tsx"));
 const Employees = lazy(() => import("./pages/Employees.tsx"));
 const Departments = lazy(() => import("./pages/Departments.tsx"));
@@ -28,6 +27,8 @@ const Timesheets = lazy(() => import("./pages/Timesheets.tsx"));
 const Corrections = lazy(() => import("./pages/Corrections.tsx"));
 const PayrollPage = lazy(() => import("./pages/PayrollPage.tsx"));
 const Reports = lazy(() => import("./pages/Reports.tsx"));
+const RequestsPage = lazy(() => import("./pages/Requests.tsx"));
+const WorkfluxEditor = lazy(() => import("./pages/WorkfluxEditor.tsx"));
 const AuditLogs = lazy(() => import("./pages/AuditLogs.tsx"));
 const Profile = lazy(() => import("./pages/Profile.tsx"));
 const Settings = lazy(() => import("./pages/Settings.tsx"));
@@ -120,13 +121,10 @@ function RouteSyncer() {
 
 /** Dashboard route that selects the right view based on user role */
 function DashboardRouter() {
-  const { user } = useAuth();
-  const isEmployee = !user?.role || user.role === "employee";
-
   return (
     <AppShell>
       <Routes>
-        <Route index element={isEmployee ? <EmployeeDashboard /> : <AdminDashboard />} />
+        <Route index element={<DashboardHome />} />
         <Route path="my-shift" element={<EmployeeDashboard />} />
         <Route path="attendance" element={<EmployeeDashboard />} />
         <Route path="activities" element={<EmployeeDashboard />} />
@@ -136,6 +134,8 @@ function DashboardRouter() {
         <Route path="teams" element={<Teams />} />
         <Route path="shifts" element={<Shifts />} />
         <Route path="timesheets" element={<Timesheets />} />
+        <Route path="requests" element={<RequestsPage />} />
+        <Route path="editor" element={<WorkfluxEditor />} />
         <Route path="corrections" element={<Corrections />} />
         <Route path="payroll" element={<PayrollPage />} />
         <Route path="reports" element={<Reports />} />

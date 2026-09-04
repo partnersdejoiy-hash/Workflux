@@ -143,6 +143,13 @@ export const NOTIFICATION_TYPES = {
   MISSING_CLOCK_OUT: "missing_clock_out",
   UNUSUAL_ATTENDANCE: "unusual_attendance",
   PAYROLL_REQUIRES_APPROVAL: "payroll_requires_approval",
+  LEAVE_REQUESTED: "leave_requested",
+  LEAVE_APPROVED: "leave_approved",
+  LEAVE_REJECTED: "leave_rejected",
+  LEAVE_CANCELLED: "leave_cancelled",
+  ADJUSTMENT_SUBMITTED: "adjustment_submitted",
+  ADJUSTMENT_APPROVED: "adjustment_approved",
+  ADJUSTMENT_REJECTED: "adjustment_rejected",
 } as const;
 
 export const notificationTypeValidator = v.union(
@@ -155,6 +162,13 @@ export const notificationTypeValidator = v.union(
   v.literal(NOTIFICATION_TYPES.MISSING_CLOCK_OUT),
   v.literal(NOTIFICATION_TYPES.UNUSUAL_ATTENDANCE),
   v.literal(NOTIFICATION_TYPES.PAYROLL_REQUIRES_APPROVAL),
+  v.literal(NOTIFICATION_TYPES.LEAVE_REQUESTED),
+  v.literal(NOTIFICATION_TYPES.LEAVE_APPROVED),
+  v.literal(NOTIFICATION_TYPES.LEAVE_REJECTED),
+  v.literal(NOTIFICATION_TYPES.LEAVE_CANCELLED),
+  v.literal(NOTIFICATION_TYPES.ADJUSTMENT_SUBMITTED),
+  v.literal(NOTIFICATION_TYPES.ADJUSTMENT_APPROVED),
+  v.literal(NOTIFICATION_TYPES.ADJUSTMENT_REJECTED),
 );
 
 // ═══════════════════════════════════════════════════════════════════
@@ -418,15 +432,20 @@ const schema = defineSchema(
     // ─── Leave Records ──────────────────────────────────────────
     leaveRecords: defineTable({
       employeeId: v.id("employees"),
-      type: v.string(), // "sick", "vacation", "personal", "unpaid"
+      type: v.string(), // "sick", "vacation", "personal", "unpaid", "other"
       startDate: v.number(),
       endDate: v.number(),
       reason: v.optional(v.string()),
-      status: v.string(), // "pending", "approved", "rejected"
+      status: v.string(), // "pending", "approved", "rejected", "cancelled"
       approvedBy: v.optional(v.id("users")),
+      durationDays: v.optional(v.number()),
+      reviewNote: v.optional(v.string()),
+      approvedAt: v.optional(v.number()),
+      updatedAt: v.optional(v.number()),
       createdAt: v.number(),
     }).index("by_employee", ["employeeId"])
-      .index("by_status", ["status"]),
+      .index("by_status", ["status"])
+      .index("by_employee_status", ["employeeId", "status"]),
 
     // ─── Holidays ───────────────────────────────────────────────
     holidays: defineTable({

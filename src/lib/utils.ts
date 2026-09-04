@@ -43,6 +43,36 @@ export function formatDateTime(timestamp: number): string {
   return `${date}, ${time}`;
 }
 
+// ─── YMD (YYYYMMDD number) date helpers ─────────────────────────────
+
+export function ymdOf(d: Date): number {
+  return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+}
+
+export function ymdToDate(ymd: number): Date {
+  return new Date(Math.floor(ymd / 10000), Math.floor((ymd % 10000) / 100) - 1, ymd % 100);
+}
+
+export function fmtYMDInput(ymd: number): string {
+  const d = ymdToDate(ymd);
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+export function ymdFromInput(value: string): number {
+  const [y, m, d] = value.split("-").map(Number);
+  return y * 10000 + m * 100 + d;
+}
+
+export function fmtYMDShort(ymd: number): string {
+  return ymdToDate(ymd).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 // ─── Status Helpers ────────────────────────────────────────────────
 
 export function getStatusBg(status: string): string {
